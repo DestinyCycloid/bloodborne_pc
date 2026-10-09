@@ -3,6 +3,10 @@
 #include <unistd.h>
 #include "../src/runtime_pad.c"
 
+#ifdef _WIN32
+#define setenv(name, value, overwrite) _putenv_s((name), (value))
+#endif
+
 static int capture;
 int bbgpu_overlay_captures_input(void) { return capture; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
@@ -20,9 +24,17 @@ static void inject(const char *path, const char *tokens) {
 
 int main(void) {
     char path[]="/tmp/bbport-pad-test-XXXXXX";
+    char config[]="/tmp/bbport-config-test-XXXXXX";
     int fd=mkstemp(path);
     assert(fd>=0);
     close(fd);
+    int config_fd=mkstemp(config);
+    assert(config_fd>=0);
+    FILE *config_file=fdopen(config_fd,"w");
+    assert(config_file);
+    fputs("pad.cross=b\npad.circle=a\n",config_file);
+    fclose(config_file);
+    setenv("BB_CONFIG",config,1);
     setenv("BB_PAD_FILE",path,1);
     setenv("SDL_VIDEODRIVER","dummy",1);
     /* Only the virtual test controller is a gamepad, whatever is plugged in. */
@@ -65,6 +77,20 @@ int main(void) {
     assert(gamepad && data.touch_count==2 && (data.buttons & BTN_TOUCHPAD));
     assert(data.touches[0].x==1439 && data.touches[0].y==471 && data.touches[0].id==0);
     assert(data.touches[1].x==480 && data.touches[1].y==942 && data.touches[1].id==1);
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_EAST,true));
+    SDL_UpdateJoysticks();
+    SDL_UpdateGamepads();
+    assert(pad_read_state(1,&data)==0);
+    assert((data.buttons & (BTN_CROSS|BTN_CIRCLE))==BTN_CROSS); /* pad.cross=b */
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_EAST,false));
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));
+    SDL_UpdateJoysticks();
+    SDL_UpdateGamepads();
+    assert(pad_read_state(1,&data)==0);
+    assert((data.buttons & (BTN_CROSS|BTN_CIRCLE))==BTN_CIRCLE); /* pad.circle=a */
+    assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,false));
+    SDL_UpdateJoysticks();
+    SDL_UpdateGamepads();
     capture=1;
     assert(pad_read_state(1,&data)==0 && data.touch_count==0 && data.buttons==0);
     capture=0;
@@ -79,5 +105,6 @@ int main(void) {
     assert(SDL_DetachVirtualJoystick(id));
     SDL_Quit();
     unlink(path);
-    puts("PASS: pad ABI, debug camera chord, left/right clicks, SDL touch coordinates, overlay capture");
+    unlink(config);
+    puts("PASS: pad ABI, remapping, debug camera chord, left/right clicks, SDL touch coordinates, overlay capture");
 }

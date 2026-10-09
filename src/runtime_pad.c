@@ -73,6 +73,120 @@ static void touch_click(PadData *d, int right) {
     d->touches[0]=(PadTouch){.x=right ? 1440 : 480,.y=471,.id=0};
 }
 
+/* Configurable input bindings, restored from historical commit 4d4d208.
+ * bbport.ini supports key.<input>=<SDL key names> and
+ * pad.<input>=<SDL gamepad button names>, comma-separated. */
+enum {
+    IN_CROSS, IN_CIRCLE, IN_SQUARE, IN_TRIANGLE, IN_L1, IN_R1, IN_L2, IN_R2, IN_L3, IN_R3,
+    IN_OPTIONS, IN_TOUCHPAD, IN_TOUCHPAD_RIGHT, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT,
+    IN_MOVE_UP, IN_MOVE_DOWN, IN_MOVE_LEFT, IN_MOVE_RIGHT, IN_LOOK_UP, IN_LOOK_DOWN, IN_LOOK_LEFT,
+    IN_LOOK_RIGHT, IN_COUNT
+};
+static const char *const input_names[IN_COUNT]={
+    "cross","circle","square","triangle","l1","r1","l2","r2","l3","r3","options","touchpad",
+    "touchpad_right","up","down","left","right","move_up","move_down","move_left","move_right",
+    "look_up","look_down","look_left","look_right",
+};
+static const uint32_t input_buttons[IN_COUNT]={
+    BTN_CROSS,BTN_CIRCLE,BTN_SQUARE,BTN_TRIANGLE,BTN_L1,BTN_R1,BTN_L2,BTN_R2,BTN_L3,BTN_R3,
+    BTN_OPTIONS,BTN_TOUCHPAD,0,BTN_UP,BTN_DOWN,BTN_LEFT,BTN_RIGHT,
+};
+#define MAX_BIND 4
+enum { PAD_LEFT_TRIGGER=SDL_GAMEPAD_BUTTON_COUNT, PAD_RIGHT_TRIGGER };
+typedef struct { int key_count, pad_count; SDL_Scancode keys[MAX_BIND]; int pad[MAX_BIND]; } Binding;
+static Binding bindings[IN_COUNT];
+static int bindings_ready;
+
+static void bind_defaults(void) {
+    static const struct { int input; SDL_Scancode key; } keys[]={
+        {IN_CROSS,SDL_SCANCODE_SPACE}, {IN_CIRCLE,SDL_SCANCODE_LSHIFT}, {IN_SQUARE,SDL_SCANCODE_E},
+        {IN_TRIANGLE,SDL_SCANCODE_Q}, {IN_L1,SDL_SCANCODE_1}, {IN_R1,SDL_SCANCODE_3},
+        {IN_L2,SDL_SCANCODE_R}, {IN_R2,SDL_SCANCODE_F}, {IN_L3,SDL_SCANCODE_Z}, {IN_R3,SDL_SCANCODE_C},
+        {IN_OPTIONS,SDL_SCANCODE_RETURN}, {IN_TOUCHPAD,SDL_SCANCODE_TAB},
+        {IN_TOUCHPAD_RIGHT,SDL_SCANCODE_BACKSPACE},
+        {IN_UP,SDL_SCANCODE_I}, {IN_DOWN,SDL_SCANCODE_K}, {IN_LEFT,SDL_SCANCODE_J}, {IN_RIGHT,SDL_SCANCODE_L},
+        {IN_MOVE_UP,SDL_SCANCODE_W}, {IN_MOVE_DOWN,SDL_SCANCODE_S}, {IN_MOVE_LEFT,SDL_SCANCODE_A},
+        {IN_MOVE_RIGHT,SDL_SCANCODE_D}, {IN_LOOK_UP,SDL_SCANCODE_UP}, {IN_LOOK_DOWN,SDL_SCANCODE_DOWN},
+        {IN_LOOK_LEFT,SDL_SCANCODE_LEFT}, {IN_LOOK_RIGHT,SDL_SCANCODE_RIGHT},
+    };
+    static const struct { int input, button; } pads[]={
+        {IN_CROSS,SDL_GAMEPAD_BUTTON_SOUTH}, {IN_CIRCLE,SDL_GAMEPAD_BUTTON_EAST},
+        {IN_SQUARE,SDL_GAMEPAD_BUTTON_WEST}, {IN_TRIANGLE,SDL_GAMEPAD_BUTTON_NORTH},
+        {IN_L1,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER}, {IN_R1,SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+        {IN_L2,PAD_LEFT_TRIGGER}, {IN_R2,PAD_RIGHT_TRIGGER},
+        {IN_L3,SDL_GAMEPAD_BUTTON_LEFT_STICK}, {IN_R3,SDL_GAMEPAD_BUTTON_RIGHT_STICK},
+        {IN_OPTIONS,SDL_GAMEPAD_BUTTON_START},
+        {IN_TOUCHPAD,SDL_GAMEPAD_BUTTON_BACK}, {IN_TOUCHPAD,SDL_GAMEPAD_BUTTON_TOUCHPAD},
+        {IN_UP,SDL_GAMEPAD_BUTTON_DPAD_UP}, {IN_DOWN,SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+        {IN_LEFT,SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {IN_RIGHT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+    };
+    memset(bindings,0,sizeof bindings);
+    for (size_t i=0;i<sizeof(keys)/sizeof(*keys);++i) {
+        Binding *b=&bindings[keys[i].input]; b->keys[b->key_count++]=keys[i].key;
+    }
+    for (size_t i=0;i<sizeof(pads)/sizeof(*pads);++i) {
+        Binding *b=&bindings[pads[i].input]; b->pad[b->pad_count++]=pads[i].button;
+    }
+}
+static int pad_button_from_name(const char *name) {
+    if (!SDL_strcasecmp(name,"lefttrigger")) return PAD_LEFT_TRIGGER;
+    if (!SDL_strcasecmp(name,"righttrigger")) return PAD_RIGHT_TRIGGER;
+    const SDL_GamepadButton b=SDL_GetGamepadButtonFromString(name);
+    return b==SDL_GAMEPAD_BUTTON_INVALID ? -1 : (int)b;
+}
+static void load_bindings(void) {
+    bind_defaults();
+    const char *path=getenv("BB_CONFIG");
+    FILE *f=path && *path ? fopen(path,"r") : fopen("bbport.ini","r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line,sizeof line,f)) {
+        const int keyboard=!strncmp(line,"key.",4), pad=!strncmp(line,"pad.",4);
+        char *eq=strchr(line,'=');
+        if ((!keyboard && !pad) || !eq) continue;
+        *eq=0;
+        int input=-1;
+        for (int i=0;i<IN_COUNT;++i) if (!strcmp(line+4,input_names[i])) input=i;
+        if (input<0 || (pad && input>=IN_MOVE_UP)) {
+            printf("Runtime: controls: unknown input %s\n",line+4);
+            continue;
+        }
+        Binding *b=&bindings[input];
+        if (keyboard) b->key_count=0; else b->pad_count=0;
+        for (char *name=strtok(eq+1,",\r\n"); name; name=strtok(NULL,",\r\n")) {
+            while (*name==' ' || *name=='\t') ++name;
+            for (char *end=name+strlen(name); end>name && (end[-1]==' ' || end[-1]=='\t');) *--end=0;
+            if (!*name) continue;
+            if (keyboard) {
+                const SDL_Scancode s=SDL_GetScancodeFromName(name);
+                if (s==SDL_SCANCODE_UNKNOWN) printf("Runtime: controls: unknown key \"%s\" for %s\n",name,line+4);
+                else if (b->key_count<MAX_BIND) b->keys[b->key_count++]=s;
+            } else {
+                const int button=pad_button_from_name(name);
+                if (button<0) printf("Runtime: controls: unknown gamepad button \"%s\" for %s\n",name,line+4);
+                else if (b->pad_count<MAX_BIND) b->pad[b->pad_count++]=button;
+            }
+        }
+    }
+    fclose(f);
+    printf("Runtime: controls loaded: %s\n",path && *path ? path : "bbport.ini");
+}
+static int key_down(const bool *k, int input) {
+    for (int i=0;i<bindings[input].key_count;++i) if (k[bindings[input].keys[i]]) return 1;
+    return 0;
+}
+static int pad_value(SDL_Gamepad *g, int input) {
+    int value=0;
+    for (int i=0;i<bindings[input].pad_count;++i) {
+        const int b=bindings[input].pad[i];
+        const int v=b==PAD_LEFT_TRIGGER ? trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFT_TRIGGER))
+                  : b==PAD_RIGHT_TRIGGER ? trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER))
+                  : SDL_GetGamepadButton(g,(SDL_GamepadButton)b) ? 255 : 0;
+        if (v>value) value=v;
+    }
+    return value;
+}
+
 /* Opens the first gamepad SDL knows about; called under lock. */
 static SDL_Gamepad *current_gamepad(void) {
     if (!sdl_ready) sdl_ready = SDL_WasInit(SDL_INIT_GAMEPAD) ? 1 : SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
@@ -96,25 +210,20 @@ static void sample_host(PadData *d) {
     d->connected=1; d->connected_count=connected_count ? connected_count : 1;
     d->timestamp=now_us();
     SDL_Gamepad *g=current_gamepad();
+    if (!bindings_ready) { load_bindings(); bindings_ready=1; }
     if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (g) {
-        static const struct { SDL_GamepadButton sdl; uint32_t ps; } map[]={
-            {SDL_GAMEPAD_BUTTON_SOUTH,BTN_CROSS}, {SDL_GAMEPAD_BUTTON_EAST,BTN_CIRCLE},
-            {SDL_GAMEPAD_BUTTON_WEST,BTN_SQUARE}, {SDL_GAMEPAD_BUTTON_NORTH,BTN_TRIANGLE},
-            {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,BTN_L1}, {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,BTN_R1},
-            {SDL_GAMEPAD_BUTTON_LEFT_STICK,BTN_L3}, {SDL_GAMEPAD_BUTTON_RIGHT_STICK,BTN_R3},
-            {SDL_GAMEPAD_BUTTON_START,BTN_OPTIONS}, {SDL_GAMEPAD_BUTTON_BACK,BTN_TOUCHPAD},
-            {SDL_GAMEPAD_BUTTON_TOUCHPAD,BTN_TOUCHPAD},
-            {SDL_GAMEPAD_BUTTON_DPAD_UP,BTN_UP}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN,BTN_DOWN},
-            {SDL_GAMEPAD_BUTTON_DPAD_LEFT,BTN_LEFT}, {SDL_GAMEPAD_BUTTON_DPAD_RIGHT,BTN_RIGHT},
-        };
-        for (size_t i=0;i<sizeof(map)/sizeof(*map);++i) if (SDL_GetGamepadButton(g,map[i].sdl)) d->buttons|=map[i].ps;
+        int touch_right=0;
+        for (int i=IN_CROSS;i<=IN_RIGHT;++i) {
+            const int v=pad_value(g,i);
+            if (i==IN_L2) d->l2=(uint8_t)v;
+            if (i==IN_R2) d->r2=(uint8_t)v;
+            if (i==IN_TOUCHPAD_RIGHT) touch_right=v>30;
+            else if (v>30) d->buttons|=input_buttons[i];
+        }
         d->left_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTX)); d->left_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFTY));
         d->right_x=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTX)); d->right_y=axis(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHTY));
-        d->l2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_LEFT_TRIGGER)); d->r2=trigger(SDL_GetGamepadAxis(g,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
-        if (d->l2>30) d->buttons|=BTN_L2;
-        if (d->r2>30) d->buttons|=BTN_R2;
         if (SDL_GetNumGamepadTouchpads(g)>0) {
             const int fingers=SDL_GetNumGamepadTouchpadFingers(g,0);
             for (int finger=0;finger<fingers && d->touch_count<2;++finger) {
@@ -128,27 +237,22 @@ static void sample_host(PadData *d) {
         }
         // Back/Select on pads without a touch surface is a left-side click.
         if ((d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
-        if (k && k[SDL_SCANCODE_TAB]) touch_click(d,0);
-        if (k && k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
+        if (touch_right) touch_click(d,1);
+        if (k && key_down(k,IN_TOUCHPAD)) touch_click(d,0);
+        if (k && key_down(k,IN_TOUCHPAD_RIGHT)) touch_click(d,1);
         return;
     }
     if (!k) return;
-    static const struct { SDL_Scancode key; uint32_t ps; } keys[]={
-        {SDL_SCANCODE_SPACE,BTN_CROSS}, {SDL_SCANCODE_LSHIFT,BTN_CIRCLE}, {SDL_SCANCODE_E,BTN_SQUARE},
-        {SDL_SCANCODE_Q,BTN_TRIANGLE}, {SDL_SCANCODE_1,BTN_L1}, {SDL_SCANCODE_3,BTN_R1},
-        {SDL_SCANCODE_R,BTN_L2}, {SDL_SCANCODE_F,BTN_R2}, {SDL_SCANCODE_Z,BTN_L3}, {SDL_SCANCODE_C,BTN_R3},
-        {SDL_SCANCODE_RETURN,BTN_OPTIONS},
-        {SDL_SCANCODE_I,BTN_UP}, {SDL_SCANCODE_K,BTN_DOWN}, {SDL_SCANCODE_J,BTN_LEFT}, {SDL_SCANCODE_L,BTN_RIGHT},
-    };
-    for (size_t i=0;i<sizeof(keys)/sizeof(*keys);++i) if (k[keys[i].key]) d->buttons|=keys[i].ps;
-    if (k[SDL_SCANCODE_TAB]) touch_click(d,0);
-    if (k[SDL_SCANCODE_BACKSPACE]) touch_click(d,1);
+    for (int i=IN_CROSS;i<=IN_RIGHT;++i)
+        if (i!=IN_TOUCHPAD && i!=IN_TOUCHPAD_RIGHT && key_down(k,i)) d->buttons|=input_buttons[i];
+    if (key_down(k,IN_TOUCHPAD)) touch_click(d,0);
+    if (key_down(k,IN_TOUCHPAD_RIGHT)) touch_click(d,1);
     if (d->buttons & BTN_L2) d->l2=255;
     if (d->buttons & BTN_R2) d->r2=255;
-    d->left_x=(uint8_t)(128-(k[SDL_SCANCODE_A] ? 128 : 0)+(k[SDL_SCANCODE_D] ? 127 : 0));
-    d->left_y=(uint8_t)(128-(k[SDL_SCANCODE_W] ? 128 : 0)+(k[SDL_SCANCODE_S] ? 127 : 0));
-    d->right_x=(uint8_t)(128-(k[SDL_SCANCODE_LEFT] ? 128 : 0)+(k[SDL_SCANCODE_RIGHT] ? 127 : 0));
-    d->right_y=(uint8_t)(128-(k[SDL_SCANCODE_UP] ? 128 : 0)+(k[SDL_SCANCODE_DOWN] ? 127 : 0));
+    d->left_x=(uint8_t)(128-(key_down(k,IN_MOVE_LEFT) ? 128 : 0)+(key_down(k,IN_MOVE_RIGHT) ? 127 : 0));
+    d->left_y=(uint8_t)(128-(key_down(k,IN_MOVE_UP) ? 128 : 0)+(key_down(k,IN_MOVE_DOWN) ? 127 : 0));
+    d->right_x=(uint8_t)(128-(key_down(k,IN_LOOK_LEFT) ? 128 : 0)+(key_down(k,IN_LOOK_RIGHT) ? 127 : 0));
+    d->right_y=(uint8_t)(128-(key_down(k,IN_LOOK_UP) ? 128 : 0)+(key_down(k,IN_LOOK_DOWN) ? 127 : 0));
 }
 
 /* BB_PAD_FILE=<file>: scripted input for automated runs. The file holds whitespace-separated
