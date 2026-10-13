@@ -13,28 +13,15 @@ from pathlib import Path
 import struct
 import sys
 
-ENCODING_FIX_VERSION = 'utf8-json-v3'
-
-
-def ascii_safe(value):
-    """Make dynamic diagnostics printable even if a Windows pipe ignores UTF-8 setup."""
-    return str(value).encode('ascii', 'backslashreplace').decode('ascii')
-
-
-def configure_output_encoding():
-    """The launcher log is UTF-8; do not inherit a Windows ANSI/GBK console codec."""
-    for stream in (sys.stdout, sys.stderr):
-        if stream is None:
-            continue
-        try:
-            stream.reconfigure(encoding='utf-8', errors='replace')
-        except (AttributeError, ValueError):
-            pass
-
-
-def write_analysis_report(path, report):
-    """The game's SFO title may contain ™, which is not representable in Windows GBK."""
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+# Path.read_text()/write_text() default to the process locale encoding. Game
+# metadata and config files can contain characters that locale cannot encode
+# (e.g. U+2122); force UTF-8 and tolerate console encode errors when printing.
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(errors='replace')
+        sys.stderr.reconfigure(errors='replace')
+    except Exception:
+        pass
 
 
 def span(data, offset, size):
@@ -261,20 +248,16 @@ def prepare(game, out):
                   bundled_modules=sorted(p.name for p in (game / 'sce_module').iterdir()),
                   resources=dict(resources), resource_bytes=total_bytes,
                   status='Prepared only; execution and Vulkan are tested separately.')
-    write_analysis_report(out / 'analysis.json', report)
-    title = ascii_safe(report['sfo'].get('TITLE'))
-    print(f"{title} | entry={header[4]:#x} | image={size:,} bytes")
+    (out / 'analysis.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n',
+                                       encoding='utf-8')
+    print(f"{report['sfo'].get('TITLE')} | entry={header[4]:#x} | image={size:,} bytes")
     print(f"{len(names)} imported symbols; {sum(counts.values()):,} relocations; {len(report['needed'])} required modules")
     print(f"Unavailable non-loadable metadata headers: {missing}; not a byte-exact ELF reconstruction")
-    print(f"Output: {ascii_safe(out.resolve())}")
+    print(f"Output: {out.resolve()}")
     print(f"libc _init_env verified RET: {libc_evidence['init_env_is_ret']}")
 
 
 if __name__ == '__main__':
-    configure_output_encoding()
-    print(f'[prepare-debug] fix={ENCODING_FIX_VERSION} script={ascii(__file__)} '
-          f'stdout={ascii(getattr(sys.stdout, "encoding", None))} utf8_mode={sys.flags.utf8_mode}',
-          file=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path)
     parser.add_argument('--out', type=Path, default=Path(__file__).resolve().parent.parent / 'out')
@@ -282,4 +265,4 @@ if __name__ == '__main__':
     try:
         prepare(args.game, args.out)
     except (ValueError, OSError, StopIteration, KeyError, IndexError) as error:
-        parser.exit(1, f'prepare failed: {ascii_safe(error)}\n')
+        parser.exit(1, f'prepare failed: {error}\n')
