@@ -69,6 +69,11 @@ static size_t reads;
 static uint8_t connected_count;
 static uint64_t last_mouse_sample_us; /* CNV-003: dt since the previous mouse-to-stick sample */
 static double smoothed_mouse_stick_x, smoothed_mouse_stick_y; /* mouse_to_axis's EMA state */
+/* Synthetic keyboard/Back clicks must look like a continuous ScePad contact across reads,
+ * with a fresh touch ID after every release/re-press. */
+static int synthetic_touch_requested, synthetic_touch_active;
+static uint8_t synthetic_touch_id;
+static uint64_t synthetic_touch_started_us;
 
 static uint64_t now_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000u+(uint64_t)t.tv_nsec/1000u; }
 static uint8_t trigger(int16_t v) { int x=v>>7; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
@@ -79,6 +84,23 @@ static void touch_click(PadData *d, int right) {
     d->buttons|=BTN_TOUCHPAD;
     d->touch_count=1;
     d->touches[0]=(PadTouch){.x=right ? 1440 : 480,.y=471,.id=0};
+    synthetic_touch_requested=1;
+}
+static void finish_synthetic_touch(PadData *d) {
+    if (synthetic_touch_requested && d->touch_count) {
+        uint64_t now=now_us();
+        if (!synthetic_touch_active) {
+            synthetic_touch_id=(uint8_t)((synthetic_touch_id+1u)&0x7fu);
+            synthetic_touch_started_us=now;
+            synthetic_touch_active=1;
+        }
+        d->touches[0].id=synthetic_touch_id;
+        d->touch_held_time=(uint32_t)((now-synthetic_touch_started_us)/1000u);
+    } else {
+        synthetic_touch_active=0;
+        synthetic_touch_started_us=0;
+    }
+    synthetic_touch_requested=0;
 }
 
 /* Compatibility for the earlier bbport.ini key.<input>/pad.<input> bindings. New installs use
@@ -578,7 +600,10 @@ static void sample_host(PadData *d) {
     /* OUT-001: touchpad_left/center/right outputs, remappable, independent of the physical pad. */
     if (button_output_held(&host,cfg,OUT_TOUCHPAD_LEFT)) touch_click(d,0);
     if (button_output_held(&host,cfg,OUT_TOUCHPAD_RIGHT)) touch_click(d,1);
-    if (button_output_held(&host,cfg,OUT_TOUCHPAD_CENTER)) { d->buttons|=BTN_TOUCHPAD; d->touch_count=1; d->touches[0]=(PadTouch){.x=960,.y=471,.id=0}; }
+    if (button_output_held(&host,cfg,OUT_TOUCHPAD_CENTER)) {
+        d->buttons|=BTN_TOUCHPAD; d->touch_count=1;
+        d->touches[0]=(PadTouch){.x=960,.y=471,.id=0}; synthetic_touch_requested=1;
+    }
 }
 
 /* BB_PAD_FILE=<file>: scripted input for automated runs. The file holds whitespace-separated
@@ -704,9 +729,14 @@ static void replay_sample(PadData *d) {
  * name) stay hidden until released: the game would take them as a new press. */
 static int hold_after_capture;
 static void sample(PadData *d) {
+    synthetic_touch_requested=0;
     reload_config_if_requested();
     sample_host(d);
-    if (bbgpu_overlay_captures_input()) { hold_after_capture=1; return; }
+    if (bbgpu_overlay_captures_input()) {
+        hold_after_capture=1;
+        finish_synthetic_touch(d);
+        return;
+    }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -718,9 +748,10 @@ static void sample(PadData *d) {
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
     for (int i=0;i<4;++i) if (injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
     if (hold_after_capture) {
-        if (d->buttons) d->buttons=0;
+        if (d->buttons) { d->buttons=0; d->touch_count=0; }
         else hold_after_capture=0;
     }
+    finish_synthetic_touch(d);
 }
 
 static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }

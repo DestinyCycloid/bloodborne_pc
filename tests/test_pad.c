@@ -5,6 +5,7 @@
 
 #ifdef _WIN32
 #define setenv(name, value, overwrite) _putenv_s((name), (value))
+#define unsetenv(name) _putenv_s((name), "")
 #endif
 
 static int capture;
@@ -451,10 +452,21 @@ int main(void) {
     assert(pad_read_state(1,&data)==0);
     assert((data.buttons & (BTN_CROSS|BTN_L3|BTN_TOUCHPAD))==(BTN_CROSS|BTN_L3|BTN_TOUCHPAD));
     assert(data.touch_count==1 && data.touches[0].x==480 && data.touches[0].y==471);
+    const uint8_t first_touch_id=data.touches[0].id;
+    assert(first_touch_id!=0 && data.touch_held_time==0);
+    usleep(2000);
+    assert(pad_read_state(1,&data)==0 && data.touch_count==1 &&
+           data.touches[0].id==first_touch_id && data.touch_held_time>=1);
     inject(path,"touchpad_right");
-    assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==1440);
+    assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==1440 &&
+           data.touches[0].id==first_touch_id && data.touch_held_time>=1);
     inject(path,"");
     assert(pad_read_state(1,&data)==0 && data.buttons==0 && data.touch_count==0);
+    inject(path,"touchpad_left");
+    assert(pad_read_state(1,&data)==0 && data.touch_count==1 &&
+           data.touches[0].id!=first_touch_id && data.touch_held_time==0);
+    inject(path,"");
+    assert(pad_read_state(1,&data)==0 && data.touch_count==0);
 
     SDL_VirtualJoystickTouchpadDesc touch={.nfingers=2};
     SDL_VirtualJoystickDesc desc;
@@ -503,7 +515,7 @@ int main(void) {
     assert(SDL_SetJoystickVirtualTouchpad(joystick,0,1,false,0,0,0));
     SDL_UpdateJoysticks();
     SDL_UpdateGamepads();
-    assert(pad_read_state(1,&data)==0 && data.touch_count==1 && data.touches[0].x==480);
+    assert(pad_read_state(1,&data)==0 && data.touch_count==0 && !(data.buttons & BTN_TOUCHPAD));
     SDL_CloseJoystick(joystick);
     if (gamepad) SDL_CloseGamepad(gamepad);
     gamepad=NULL;
