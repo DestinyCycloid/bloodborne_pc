@@ -13,7 +13,6 @@ from pathlib import Path
 import struct
 import sys
 
-
 ENCODING_FIX_VERSION = 'utf8-json-v3'
 
 
