@@ -162,6 +162,11 @@ void Menu() {
                                    viewport->WorkPos.y + 40.0f * base_scale),
                             ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(620.0f * base_scale, 0.0f), ImGuiCond_Appearing);
+    // A menu taller than the screen would leave its last row (Close) off screen: the window
+    // stays within the screen (below its 40 px offset) and scrolls instead.
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0.0f, 0.0f),
+        ImVec2(FLT_MAX, std::max(viewport->WorkSize.y - 60.0f * base_scale, 200.0f * base_scale)));
     bool keep_open = true;
     if (!ImGui::Begin("Bloodborne - Settings (Insert / L3+R3)", &keep_open,
                       ImGuiWindowFlags_NoCollapse)) {
@@ -361,6 +366,24 @@ void Menu() {
     ImGui::Spacing();
     if (ImGui::Button("Close")) {
         keep_open = false;
+    }
+    // Issues #74, #116: leaving the game from the pad (this menu opens with L3+R3). A second
+    // press confirms; the window thread then closes like the window's own close button.
+    // (From bbport 0.51.)
+    static bool quit_armed;
+    ImGui::SameLine();
+    // One ID for both labels ("###bb_quit"): with a new ID the button lost the pad's or keyboard's
+    // focus at the first press, which disarmed it at once.
+    if (ImGui::Button(quit_armed ? "Press again to quit###bb_quit" : "Quit game###bb_quit")) {
+        if (quit_armed) {
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        }
+        quit_armed = !quit_armed;
+    }
+    if (quit_armed && !ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
+        quit_armed = false;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("Settings are saved to bbport.ini");

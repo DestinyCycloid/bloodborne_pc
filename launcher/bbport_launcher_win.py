@@ -40,7 +40,7 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '1.7'
+VERSION = '1.7.2'
 # Co-op: the community server that answers the game's own server requests.
 COMMUNITY_SERVER = 'https://thehuntersdream.com'
 RELEASES_API = 'https://api.github.com/repos/Supermedo/bloodborne_pc/releases/latest'
@@ -128,7 +128,7 @@ import bbport_lang  # noqa: E402
 import bbport_trophies as trophies  # noqa: E402
 from bbport_input_config import (KEYBOARD_OUTPUTS, BUTTON_OUTPUTS, STICK_OUTPUTS, OUTPUT_LABELS, keysym_to_name,
                                   button_num_to_name, input_ini_path, load_input_ini, reserved_keys,
-                                  save_input_ini, save_mouse_settings)  # noqa: E402
+                                  save_input_ini, save_mouse_settings, wheel_to_name)  # noqa: E402
 
 LANG = 'en'
 
@@ -204,7 +204,8 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
-                'online_community': COMMUNITY_SERVER}
+                'online_community': COMMUNITY_SERVER, 'online_pool': 'shadnet', 'bridge_live_map': True}
+# bbbridge's own app reads and writes the online_* keys above: keep their names.
 
 UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
              ('fsr4', ('FSR 4 (best quality)', 'FSR 4 (лучшее качество)')),
@@ -369,6 +370,60 @@ def server_check(server, webapi, community):
     return '\n'.join(lines)
 
 
+# The Hunter's Dream co-op pool (with bbhost players): bbbridge (bbbridge/, by MaskZeus), which
+# run.py starts with the game. Its account (Discord sign-in) stays in <saves>/bbbridge.
+BRIDGE_PAGE = 'https://github.com/MaskZeus/bbbridge-bbport-online-tool'
+
+
+def bridge_cli():
+    for folder in (PORT_DIR / 'bin', PORT_DIR / 'out'):
+        if (folder / 'bbbridge-cli.exe').is_file():
+            return folder / 'bbbridge-cli.exe'
+    return None
+
+
+def bridge_folder(user_dir):
+    folder = Path(user_dir or DATA_DIR / 'user')
+    return (folder if folder.is_absolute() else PORT_DIR / folder) / 'bbbridge'
+
+
+def bridge_config(user_dir):
+    """<saves>/bbbridge and bbbridge's config there (the same files run.py uses)."""
+    folder = bridge_folder(user_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    config = folder / 'bbbridge_config.json'
+    data = load_json(config, {})
+    data = data if isinstance(data, dict) else {}
+    state = str(folder / 'bbbridge_state.json')
+    if data.get('state_file') != state:
+        data['state_file'] = state
+        config.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    return folder, config
+
+
+def bridge_accounts(user_dir):
+    """The Hunter's Dream ids signed in with Discord."""
+    state = load_json(bridge_folder(user_dir) / 'bbbridge_state.json', {})
+    accounts = state.get('accounts') if isinstance(state, dict) else None
+    return list(accounts) if isinstance(accounts, dict) else []
+
+
+def server_check_hunters_dream():
+    """Whether The Hunter's Dream's game server and bbhost service answer (off the Tk thread)."""
+    lines = []
+    for title, url in ((_('Game server {0}'), COMMUNITY_SERVER + ':20443/bb-eu/ss.info'),
+                       (_('Co-op service {0}'), COMMUNITY_SERVER + ':18671/')):
+        name = title.format(url.split('://', 1)[1].split('/')[0])
+        try:
+            urllib.request.urlopen(url, timeout=6).close()
+            lines.append(_('{0}: reachable').format(name))
+        except urllib.error.HTTPError:
+            lines.append(_('{0}: reachable').format(name))   # it answered
+        except (OSError, ValueError) as error:
+            lines.append(_('{0}: not reachable ({1})').format(name, error))
+    return '\n'.join(lines)
+
+
 def game_environment(s):
     env = dict(os.environ)
     env['BB_GAME_DIR'] = s['game_dir']
@@ -412,6 +467,12 @@ def game_environment(s):
         env['BB_SHADNET_PASSWORD'] = str(s['online_password'])
         env['BB_UPNP'] = '1' if s['online_upnp'] else '0'
         env['BB_COMMUNITY_SERVER'] = community_address(s['online_community'])
+        if s.get('online_pool') == 'huntersdream':
+            # run.py starts bbbridge and signs the game in with the Hunter's Dream id.
+            env['BB_BRIDGE'] = '1'
+            env['BB_BRIDGE_LIVE_MAP'] = '1' if s.get('bridge_live_map') else '0'
+            env['BB_SHADNET_NPID'] = ''
+            env['BB_SHADNET_PASSWORD'] = ''
     env['PYTHONUNBUFFERED'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     return env
@@ -536,6 +597,7 @@ class Launcher:
         s.configure('TLabel', background=PANEL, foreground=TEXT)
         s.configure('Muted.TLabel', background=PANEL, foreground=MUTED, font=('Segoe UI', 9))
         s.configure('Section.TLabel', background=PANEL, foreground=GOLD, font=('Georgia', 13))
+        s.configure('Code.TLabel', background=PANEL, foreground=GOLD, font=('Consolas', 22, 'bold'))
         s.configure('TCheckbutton', background=PANEL, foreground=TEXT, padding=(0, 3))
         s.map('TCheckbutton', background=[('active', PANEL)], foreground=[('disabled', MUTED)])
         s.configure('Warning.TLabel', background='#2a1d12', foreground='#e3b25a', padding=(10, 6))
@@ -959,6 +1021,91 @@ class Launcher:
         self.check(f, 'online', 'app', _('Play online'),
                    _('Off: the game stays offline, as before.'))
         self.var('online', 'app').trace_add('write', lambda *_a: self.refresh_status())
+        self.section(f, _('Co-op pool'))
+        pool = self.var('online_pool', 'app')
+        pool.trace_add('write', lambda *_a: self.refresh_status())
+        pools = ttk.Frame(f)
+        ttk.Radiobutton(pools, text=_('shadNet server'), variable=pool, value='shadnet').pack(side='left')
+        ttk.Radiobutton(pools, text=_("The Hunter's Dream (with bbhost players)"), variable=pool,
+                        value='huntersdream').pack(side='left', padx=(16, 0))
+        self.row(f, _('Play with'), pools,
+                 _("shadNet: the server and account below. The Hunter's Dream: the players of bbhost, "
+                   "the PC port by The Hunter's Dream's team; sign in with Discord below."))
+        self.section(f, _("The Hunter's Dream account"))
+        account = ttk.Label(f, text='', justify='left')
+        user_dir = self.var('user_dir', 'app')
+
+        def show_accounts():
+            ids = bridge_accounts(user_dir.get())
+            account.configure(text=_('Signed in as {}').format(', '.join(ids)) if ids else _('Not signed in'))
+        show_accounts()
+        self.row(f, _('Account'), account)
+        signing = ttk.Label(f, text='', style='Muted.TLabel', justify='left', wraplength=self.px(560))
+        # The code to type on the website, large, with a button that copies it.
+        code_box = ttk.Frame(f)
+        code_label = ttk.Label(code_box, text='', style='Code.TLabel')
+        code_label.pack(side='left')
+
+        def copy_code():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code_label.cget('text'))
+        ttk.Button(code_box, text=_('Copy'), command=copy_code).pack(side='left', padx=(14, 0))
+
+        def show_code(code=''):
+            code_label.configure(text=code)
+            if code:
+                code_box.grid()
+            else:
+                code_box.grid_remove()
+
+        def sign_in():
+            cli = bridge_cli()
+            if not cli:
+                signing.configure(text=_('bbbridge-cli.exe is missing from this installation.'))
+                return
+            try:
+                folder, config = bridge_config(user_dir.get())
+            except OSError as error:
+                signing.configure(text=_('Sign-in failed: {}').format(error))
+                return
+            signing.configure(text=_('Starting the sign-in…'))
+            show_code()
+
+            def work():
+                try:
+                    process = subprocess.Popen([str(cli), '--config', str(config), '--link-discord'], cwd=folder,
+                                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                               stderr=subprocess.STDOUT, creationflags=NO_WINDOW,
+                                               text=True, encoding='utf-8', errors='replace')
+                except OSError as error:
+                    self.ui_calls.put(lambda e=error: signing.configure(text=_('Sign-in failed: {}').format(e)))
+                    return
+                for line in process.stdout:
+                    line = line.strip()
+                    code = re.match(r'Open (\S+) and enter the code (\S+)', line)
+                    if code:
+                        text = _('In the page that opened ({0}), sign in with Discord and enter this code:').format(
+                            code.group(1))
+                        self.ui_calls.put(lambda t=text, c=code.group(2): (signing.configure(text=t), show_code(c)))
+                        webbrowser.open(code.group(1))
+                    elif line.startswith('signed in as '):
+                        self.ui_calls.put(lambda: (signing.configure(text=''), show_code(), show_accounts()))
+                    elif line.startswith('failed'):
+                        reason = line.split(':', 1)[-1].strip()
+                        self.ui_calls.put(lambda r=reason: (signing.configure(text=_('Sign-in failed: {}').format(r)),
+                                                            show_code()))
+                process.wait()
+            threading.Thread(target=work, daemon=True).start()
+        self.row(f, '', ttk.Button(f, text=_('Sign in with Discord'), command=sign_in))
+        signing.grid(row=self.next_row(f), column=1, sticky='w', pady=(6, 0))
+        code_box.grid(row=self.next_row(f), column=1, sticky='w', pady=(4, 0))
+        self.check(f, 'bridge_live_map', 'app', _('Show me on the live map'),
+                   _("thehuntersdream.com/map shows where players are and which bells ring: the game sends "
+                     "your position more often while you play."))
+        credit = ttk.Label(f, text=_("The bridge to The Hunter's Dream is bbbridge by MaskZeus; bbhost and "
+                                     "The Hunter's Dream are by droogie."), style='Muted.TLabel', cursor='hand2')
+        credit.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(8, 0))
+        credit.bind('<Button-1>', lambda _e: webbrowser.open(BRIDGE_PAGE))
         self.section(f, _('Game server (messages, bloodstains, ghosts)'))
         community = self.var('online_community', 'app')
         self.row(f, _('Game server'), ttk.Entry(f, textvariable=community, width=40),
@@ -988,11 +1135,20 @@ class Launcher:
             address = values['online_server'].strip() or APP_DEFAULTS['online_server']
             webapi, game = webapi_setting(values), community_address(values['online_community'])
             online_on = self.var('online', 'app').get()
+            hunters_dream = pool.get() == 'huntersdream'
+            signed_in = bridge_accounts(user_dir.get())
             result.configure(text=_('Checking…'))
 
             def work():
-                text = server_check(address, webapi, game)
-                if values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
+                if hunters_dream:
+                    text = server_check_hunters_dream()
+                    text += '\n' + (_('Signed in as {}').format(', '.join(signed_in)) if signed_in else
+                                    _('Not signed in: use "Sign in with Discord" above.'))
+                    if not bridge_cli():
+                        text += '\n' + _('bbbridge-cli.exe is missing from this installation.')
+                else:
+                    text = server_check(address, webapi, game)
+                if not hunters_dream and values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
                     text += '\n' + _('The WebAPI box holds the game server address; it is ignored.')
                 if not online_on:
                     text += '\n' + _('"Play online" is off: the game starts offline.')
@@ -1002,6 +1158,7 @@ class Launcher:
         result.grid(row=self.next_row(f), column=1, sticky='w', pady=(6, 0))
         self.note(f, _('Everyone in a session needs the same game version (1.09) and the same server. '
                        'Cheats change the game for the other players too: turn them off when you play together.'))
+        show_code()  # hidden until a sign-in shows one; its row stays reserved (rows are counted above)
 
     def build_mods(self):
         f = self.scrolled_page('mods', _('Mods & patches', 'Моды и патчи'),
@@ -1303,10 +1460,12 @@ class Launcher:
                      'Добавляется поверх чувствительности; поднимает минимальную скорость для '
                      'медленных движений, почти не влияя на быстрые.'), 0.0, 1.0)
 
-        self.note(f, _('The scroll wheel is configured in input.ini directly (see docs/INPUT.md) '
-                       '— mouse buttons are bound from the Buttons section above.',
-                       'Колесо мыши настраивается напрямую в input.ini (см. docs/INPUT.md) — '
-                       'кнопки мыши назначаются в разделе «Кнопки» выше.'), top=10)
+        self.note(f, _('Mouse buttons and the scroll wheel are bound in the Buttons section above: '
+                       'press Set… and click or turn the wheel. They work while the mouse is captured '
+                       '(mouse look on).',
+                       'Кнопки мыши и колесо назначаются в разделе «Кнопки» выше: нажмите «Назначить…» '
+                       'и щёлкните или прокрутите колесо. Они работают, пока мышь захвачена '
+                       '(обзор мышью включён).'), top=10)
         self.note(f, _('Changes apply the next time the game starts, or press F8 in-game to '
                        'reload input.ini without restarting.',
                        'Изменения применяются при следующем запуске игры, либо нажмите F8 в '
@@ -1335,7 +1494,8 @@ class Launcher:
         leftbutton" the instant capture starts."""
         is_stick = output in STICK_OUTPUTS
         original_text = set_btn['text']
-        key_label.configure(text=_('Press a key or mouse button…', 'Нажмите клавишу или кнопку мыши…')
+        key_label.configure(text=_('Press a key, a mouse button or turn the wheel…',
+                                   'Нажмите клавишу, кнопку мыши или прокрутите колесо…')
                             if not is_stick else _('Press a key…', 'Нажмите клавишу…'))
         set_btn.configure(state='disabled')
         self.root.grab_set()
@@ -1343,6 +1503,8 @@ class Launcher:
         def finish():
             self.root.unbind_all('<KeyPress>')
             self.root.unbind_all('<ButtonPress>')
+            self.root.unbind_all('<Shift-MouseWheel>')
+            self.root.bind_all('<MouseWheel>', self.wheel)  # the pages scroll again
             self.root.grab_release()
             set_btn.configure(state='normal', text=original_text)
             self.refresh_remap_row(output)
@@ -1384,9 +1546,18 @@ class Launcher:
                 return
             apply(name)
 
+        def on_wheel(event, horizontal=False):
+            name = wheel_to_name(event.delta, horizontal)
+            if name:
+                apply(name)
+            return 'break'
+
         self.root.bind_all('<KeyPress>', on_key)
         if not is_stick:
             self.root.after_idle(lambda: self.root.bind_all('<ButtonPress>', on_click))
+            # While waiting, the wheel binds instead of scrolling the page.
+            self.root.bind_all('<MouseWheel>', on_wheel)
+            self.root.bind_all('<Shift-MouseWheel>', lambda e: on_wheel(e, True))
 
     def build_advanced(self):
         ttk = self.ttk
@@ -1504,6 +1675,8 @@ class Launcher:
         upscaler = dict(UPSCALERS).get(self.var('upscaler', 'ini').get(), ('?',))[0].split(' (')[0]
         output = self.var('output_res', 'ini').get().replace('x', ' × ')
         online = _('Online') if self.var('online', 'app').get() else _('Offline')
+        if self.var('online', 'app').get() and self.var('online_pool', 'app').get() == 'huntersdream':
+            online = _("Online (The Hunter's Dream)")
         return f'{_(*fps)}   ·   {upscaler}   ·   {output}   ·   {online}'
 
     def detect_gpu(self):
@@ -1671,7 +1844,13 @@ class Launcher:
             if choice is None:
                 return
             online.set(bool(choice))
-        if online.get() and '@' in npid.get():
+        hunters_dream = self.var('online_pool', 'app').get() == 'huntersdream'
+        if online.get() and hunters_dream and not bridge_accounts(self.var('user_dir', 'app').get()):
+            self.messagebox.showwarning(
+                'Bloodborne', _("To play online with The Hunter's Dream, sign in with Discord first."))
+            self.show('online')
+            return
+        if online.get() and not hunters_dream and '@' in npid.get():
             self.messagebox.showwarning(
                 'Bloodborne', _('The Online ID is the account name (NPID) you registered on the server, '
                                 'not your email address.'))
