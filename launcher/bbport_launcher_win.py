@@ -40,7 +40,7 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This build; GitHub release tags are windows-v<VERSION>.
-VERSION = '1.7.2'
+VERSION = '1.7.5'
 # Co-op: the community server that answers the game's own server requests.
 COMMUNITY_SERVER = 'https://thehuntersdream.com'
 RELEASES_API = 'https://api.github.com/repos/Supermedo/bloodborne_pc/releases/latest'
@@ -189,11 +189,13 @@ TWEAKS = [
                        'Физика тел как в Dark Souls (тела отлетают дальше)'), False),
     ('tweak_circle_confirm', ('Japanese/Asian buttons: Circle confirms and interacts, Cross dodges',
                               'Японская раскладка: Круг — подтверждение и действие, Крест — уклонение'), False),
+    ('quit_to_desktop', ('Quit to Desktop in the title menu and in the System menu',
+                         'Пункт «Выйти на рабочий стол» в главном меню и в меню «Система»'), True),
 ]
 INI_FLAGS = {'sharpen', 'object_motion', 'show_fps', *(k for k, _t, _o in EFFECTS + EXTRAS + CHEATS + TWEAKS)}
 INI_DEFAULTS = {'upscaler': 'fsr4', 'preset': '1', 'sharpen': '1', 'sharpness': '0.50',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '1920x1080', 'model_lod': '0',
-                'live_resolution': 'auto',
+                'live_resolution': 'auto', 'hud_position': '100',
                 **{key: '1' if on else '0' for key, _t, on in EFFECTS + EXTRAS + CHEATS + TWEAKS}}
 APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'), 'user_dir': '', 'dlc_dir': '',
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
@@ -204,7 +206,8 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
-                'online_community': COMMUNITY_SERVER, 'online_pool': 'shadnet', 'bridge_live_map': True}
+                'online_community': COMMUNITY_SERVER, 'online_pool': 'shadnet', 'bridge_live_map': True,
+                'supermedo_user': '', 'supermedo_password': ''}
 # bbbridge's own app reads and writes the online_* keys above: keep their names.
 
 UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
@@ -216,7 +219,12 @@ UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
 PRESETS = [('0', ('Native AA (×1.0)',)), ('1', ('Quality (×1.5)',)), ('2', ('Balanced (×1.7)',)),
            ('3', ('Performance (×2)',)), ('4', ('Ultra Performance (×3)',))]
 OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 1080',)),
-           ('2560x1440', ('2560 × 1440',)), ('3840x2160', ('3840 × 2160 (4K)',))]
+           ('2560x1440', ('2560 × 1440',)), ('3840x2160', ('3840 × 2160 (4K)',)),
+           ('2560x1080', ('2560 × 1080 (21:9)',)), ('3440x1440', ('3440 × 1440 (21:9)',)),
+           ('3840x1600', ('3840 × 1600 (21:9)',)), ('5120x2160', ('5120 × 2160 (21:9)',)),
+           ('3840x1080', ('3840 × 1080 (32:9)',)), ('5120x1440', ('5120 × 1440 (32:9)',))]
+HUD_POSITIONS = [('100', ('Screen edges', 'У краёв экрана')), ('75', ('75%',)), ('50', ('Halfway', 'Посередине')),
+                 ('25', ('25%',)), ('0', ('Centred (16:9)', 'По центру (16:9)'))]
 LIVE = [('auto', ('Auto (by graphics card)', 'Авто (по видеокарте)')), ('0', ('Off (faster)', 'Выключена (быстрее)')),
         ('1', ('On (change without restarting)', 'Включена (без перезапуска)'))]
 LODS = [('0', ('As in the game', 'Как в игре')), ('-2', ('Highest (−2)', 'Максимальная (−2)')),
@@ -373,6 +381,10 @@ def server_check(server, webapi, community):
 # The Hunter's Dream co-op pool (with bbhost players): bbbridge (bbbridge/, by MaskZeus), which
 # run.py starts with the game. Its account (Discord sign-in) stays in <saves>/bbbridge.
 BRIDGE_PAGE = 'https://github.com/MaskZeus/bbbridge-bbport-online-tool'
+# The SuperMedo Server co-op pool: a shadNet server reached over Tailscale; accounts are made at
+# SUPERMEDO_SIGNUP. The launcher shows the pool's name, not its address.
+SUPERMEDO_SERVER = '100.65.30.50:31313'
+SUPERMEDO_SIGNUP = 'https://www.supermedo.com'
 
 
 def bridge_cli():
@@ -467,6 +479,13 @@ def game_environment(s):
         env['BB_SHADNET_PASSWORD'] = str(s['online_password'])
         env['BB_UPNP'] = '1' if s['online_upnp'] else '0'
         env['BB_COMMUNITY_SERVER'] = community_address(s['online_community'])
+        if s.get('online_pool') == 'supermedo':
+            env['BB_SHADNET_SERVER'] = SUPERMEDO_SERVER
+            env['BB_SHADNET_WEBAPI'] = webapi_address(SUPERMEDO_SERVER)
+            env['BB_POOL_NAME'] = 'SuperMedo Server'
+            env['BB_SHADNET_NPID'] = str(s.get('supermedo_user', '')).strip()
+            env['BB_SHADNET_PASSWORD'] = str(s.get('supermedo_password', ''))
+            env['BB_UPNP'] = '0'  # over Tailscale
         if s.get('online_pool') == 'huntersdream':
             # run.py starts bbbridge and signs the game in with the Hunter's Dream id.
             env['BB_BRIDGE'] = '1'
@@ -902,6 +921,12 @@ class Launcher:
         self.row(f, _('Output resolution', 'Разрешение вывода'), self.choice(f, 'output_res', 'ini', OUTPUTS),
                  _('What the upscaler produces; the HUD is drawn at this size too.',
                    'Что выдаёт апскейлер; интерфейс рисуется в этом же размере.'))
+        self.row(f, _('HUD position (ultrawide)', 'Положение интерфейса (21:9)'),
+                 self.choice(f, 'hud_position', 'ini', HUD_POSITIONS),
+                 _('21:9 outputs: health, items and Blood Echoes at the screen edges, or in the centred '
+                   '16:9 area as on a 16:9 screen.',
+                   'Для 21:9: здоровье, предметы и Отголоски крови у краёв экрана или в центральной '
+                   'области 16:9, как на обычном экране.'))
         self.row(f, _('Live resolution changes', 'Смена разрешения на лету'), self.choice(f, 'live_resolution', 'ini', LIVE),
                  _('Off: outputs other than 1080p are set by a patch at start (fastest; changing them in the '
                    'game restarts it). On: change output and preset in the game without a restart, at a cost.',
@@ -1026,11 +1051,33 @@ class Launcher:
         pool.trace_add('write', lambda *_a: self.refresh_status())
         pools = ttk.Frame(f)
         ttk.Radiobutton(pools, text=_('shadNet server'), variable=pool, value='shadnet').pack(side='left')
+        ttk.Radiobutton(pools, text=_('SuperMedo Server'), variable=pool,
+                        value='supermedo').pack(side='left', padx=(16, 0))
         ttk.Radiobutton(pools, text=_("The Hunter's Dream (with bbhost players)"), variable=pool,
                         value='huntersdream').pack(side='left', padx=(16, 0))
         self.row(f, _('Play with'), pools,
-                 _("shadNet: the server and account below. The Hunter's Dream: the players of bbhost, "
-                   "the PC port by The Hunter's Dream's team; sign in with Discord below."))
+                 _("shadNet: a shadNet server and its account. SuperMedo Server: an account from "
+                   "supermedo.com, with Tailscale connected. The Hunter's Dream: the players of bbhost, "
+                   "the PC port by The Hunter's Dream's team, with a Discord sign-in."))
+        # Each pool shows only its own settings (show_pool below).
+        groups = {}
+        before = set(f.grid_slaves())
+
+        def group(name):
+            nonlocal before
+            now = set(f.grid_slaves())
+            groups[name] = groups.get(name, []) + list(now - before)
+            before = now
+
+        self.section(f, _('SuperMedo Server account'))
+        self.row(f, '', ttk.Button(f, text=_('Sign up for SuperMedo Server'),
+                                   command=lambda: webbrowser.open(SUPERMEDO_SIGNUP)))
+        self.row(f, _('Username'), ttk.Entry(f, textvariable=self.var('supermedo_user', 'app'), width=40),
+                 _('The account you made at supermedo.com. Tailscale must be connected.'))
+        self.row(f, _('Password'), ttk.Entry(f, textvariable=self.var('supermedo_password', 'app'), width=40,
+                                             show='•'),
+                 _('Saved on this PC with the other launcher settings.'))
+        group('supermedo')
         self.section(f, _("The Hunter's Dream account"))
         account = ttk.Label(f, text='', justify='left')
         user_dir = self.var('user_dir', 'app')
@@ -1106,6 +1153,7 @@ class Launcher:
                                      "The Hunter's Dream are by droogie."), style='Muted.TLabel', cursor='hand2')
         credit.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(8, 0))
         credit.bind('<Button-1>', lambda _e: webbrowser.open(BRIDGE_PAGE))
+        group('huntersdream')
         self.section(f, _('Game server (messages, bloodstains, ghosts)'))
         community = self.var('online_community', 'app')
         self.row(f, _('Game server'), ttk.Entry(f, textvariable=community, width=40),
@@ -1124,9 +1172,11 @@ class Launcher:
                    'owner of a private server.'))
         self.row(f, _('Password'), ttk.Entry(f, textvariable=self.var('online_password', 'app'), width=40, show='•'),
                  _('Saved on this PC with the other launcher settings.'))
+        group('shadnet')
         self.section(f, _('Connection'))
         self.check(f, 'online_upnp', 'app', _('UPnP (open a port on the router automatically)'),
                    _('Turn it off on Tailscale or another VPN.'))
+        group('upnp')
         result = ttk.Label(f, text='', style='Muted.TLabel', justify='left')
 
         def check():
@@ -1135,7 +1185,8 @@ class Launcher:
             address = values['online_server'].strip() or APP_DEFAULTS['online_server']
             webapi, game = webapi_setting(values), community_address(values['online_community'])
             online_on = self.var('online', 'app').get()
-            hunters_dream = pool.get() == 'huntersdream'
+            pool_name = pool.get()
+            hunters_dream, supermedo = pool_name == 'huntersdream', pool_name == 'supermedo'
             signed_in = bridge_accounts(user_dir.get())
             result.configure(text=_('Checking…'))
 
@@ -1146,9 +1197,17 @@ class Launcher:
                                     _('Not signed in: use "Sign in with Discord" above.'))
                     if not bridge_cli():
                         text += '\n' + _('bbbridge-cli.exe is missing from this installation.')
+                elif supermedo:
+                    # The pool's name instead of its address.
+                    text = server_check(SUPERMEDO_SERVER, webapi_address(SUPERMEDO_SERVER), game)
+                    text = text.replace('http://' + SUPERMEDO_SERVER.split(':')[0] + ':31315', 'SuperMedo Server')
+                    text = text.replace(SUPERMEDO_SERVER, 'SuperMedo Server')
+                    text = text.replace(SUPERMEDO_SERVER.split(':')[0], 'SuperMedo Server')
+                    if 'SuperMedo Server: not reachable' in text:
+                        text += '\n' + _('SuperMedo Server needs Tailscale connected to its network.')
                 else:
                     text = server_check(address, webapi, game)
-                if not hunters_dream and values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
+                if pool_name == 'shadnet' and values['online_webapi'].strip() and values['online_webapi'].strip() != webapi:
                     text += '\n' + _('The WebAPI box holds the game server address; it is ignored.')
                 if not online_on:
                     text += '\n' + _('"Play online" is off: the game starts offline.')
@@ -1159,6 +1218,21 @@ class Launcher:
         self.note(f, _('Everyone in a session needs the same game version (1.09) and the same server. '
                        'Cheats change the game for the other players too: turn them off when you play together.'))
         show_code()  # hidden until a sign-in shows one; its row stays reserved (rows are counted above)
+        shown = {'shadnet': {'shadnet', 'upnp'}, 'supermedo': {'supermedo'},
+                 'huntersdream': {'huntersdream', 'upnp'}}
+
+        def show_pool(*_args):
+            want = shown.get(pool.get(), shown['shadnet'])
+            for name, widgets in groups.items():
+                for widget in widgets:
+                    if widget is not code_box:
+                        widget.grid() if name in want else widget.grid_remove()
+            if 'huntersdream' in want:
+                show_code(code_label.cget('text'))
+            else:
+                code_box.grid_remove()
+        pool.trace_add('write', show_pool)
+        show_pool()
 
     def build_mods(self):
         f = self.scrolled_page('mods', _('Mods & patches', 'Моды и патчи'),
@@ -1677,6 +1751,8 @@ class Launcher:
         online = _('Online') if self.var('online', 'app').get() else _('Offline')
         if self.var('online', 'app').get() and self.var('online_pool', 'app').get() == 'huntersdream':
             online = _("Online (The Hunter's Dream)")
+        elif self.var('online', 'app').get() and self.var('online_pool', 'app').get() == 'supermedo':
+            online = _('Online (SuperMedo Server)')
         return f'{_(*fps)}   ·   {upscaler}   ·   {output}   ·   {online}'
 
     def detect_gpu(self):
@@ -1844,13 +1920,21 @@ class Launcher:
             if choice is None:
                 return
             online.set(bool(choice))
-        hunters_dream = self.var('online_pool', 'app').get() == 'huntersdream'
+        pool_name = self.var('online_pool', 'app').get()
+        hunters_dream = pool_name == 'huntersdream'
         if online.get() and hunters_dream and not bridge_accounts(self.var('user_dir', 'app').get()):
             self.messagebox.showwarning(
                 'Bloodborne', _("To play online with The Hunter's Dream, sign in with Discord first."))
             self.show('online')
             return
-        if online.get() and not hunters_dream and '@' in npid.get():
+        if online.get() and pool_name == 'supermedo' and not (
+                self.var('supermedo_user', 'app').get().strip() and self.var('supermedo_password', 'app').get()):
+            self.messagebox.showwarning(
+                'Bloodborne', _('To play on SuperMedo Server, enter your supermedo.com username and password '
+                                'on the Online co-op page (Sign up there if you have no account).'))
+            self.show('online')
+            return
+        if online.get() and pool_name == 'shadnet' and '@' in npid.get():
             self.messagebox.showwarning(
                 'Bloodborne', _('The Online ID is the account name (NPID) you registered on the server, '
                                 'not your email address.'))
@@ -1889,9 +1973,17 @@ class Launcher:
             log = open(log_dir / 'last_run.log', 'w', encoding='utf-8', buffering=1)
         except OSError:
             pass
+        warned = False
         for raw in iter(process.stdout.readline, b''):
             text = raw.decode('utf-8', errors='replace')
             self.output.put(text)
+            if not warned and 'eboot.bin is not the 01.09 build' in text:
+                warned = True
+                self.ui_calls.put(lambda: self.messagebox.showwarning('Bloodborne', _(
+                    "Your eboot.bin is not the clean 1.09 one (modified, or from another dump). The port "
+                    "cannot patch it: the game runs at 30 FPS, the Game & effects options do nothing, and "
+                    "some scenes (like the cutscene after Rom) can freeze.\n\nReplace eboot.bin with the one "
+                    "from an unmodified 1.09 update.")))
             if log:
                 log.write(text.replace('\r\n', '\n'))
         if log:
